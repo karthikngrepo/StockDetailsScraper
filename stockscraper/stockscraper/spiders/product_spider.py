@@ -6,6 +6,9 @@ import os
 
 class ProductSpider(scrapy.Spider):
     name = "product"
+    relative_path = os.path.realpath(os.path.dirname(__file__))
+    product_url_filename = os.path.join(relative_path, '../samples/product_urls.txt')
+    stock_analysis_file_path = os.path.join(relative_path, '../samples/StockMarketData.csv')
 
     def __init__(self, *args, **kwargs):
         super(ProductSpider, self).__init__(*args, **kwargs)
@@ -51,9 +54,9 @@ class ProductSpider(scrapy.Spider):
 
     def start_requests(self):
         urls = []
-        product_url_filename = 'product_urls.txt'
+        spider = ProductSpider()
 
-        with open(product_url_filename, 'r') as f:
+        with open(spider.product_url_filename, 'r') as f:
             [urls.append(line.replace('\n', '')) for line in f.readlines()]
 
         for url in urls:
@@ -62,9 +65,11 @@ class ProductSpider(scrapy.Spider):
             stock_short_name = url_elements[len(url_elements) - 2]
             yield scrapy.Request(url=url,
                                  callback=self.parse_summary,
-                                 cb_kwargs=dict(stock_id=stock_id, stock_short_name=stock_short_name))
+                                 cb_kwargs=dict(stock_id=stock_id,
+                                                stock_short_name=stock_short_name,
+                                                spider=spider))
 
-    def parse_summary(self, response, stock_id, stock_short_name):
+    def parse_summary(self, response, stock_id, stock_short_name, spider):
         summary_stats = {
             self.stock_name:
                 response.xpath('//*[@id="sec_quotes"]/div[2]/div/h1/text()').get(),
@@ -95,45 +100,46 @@ class ProductSpider(scrapy.Spider):
                      % (stock_short_name, stock_id, stock_id)
         yield scrapy.Request(url=yearly_url,
                              callback=self.parse_yearly_stats,
-                             cb_kwargs=dict(stock_id=stock_id, dataframe=dataframe))
+                             cb_kwargs=dict(stock_id=stock_id,
+                                            dataframe=dataframe,
+                                            spider=spider))
 
-    def parse_yearly_stats(self, response, stock_id, dataframe):
+    def parse_yearly_stats(self, response, stock_id, dataframe, spider):
         yearly_stats = dict()
-        yearly_results_table = response.xpath('//*[@id="standalone-new"]/div[1]/table/tr')
-        _get_avg_dividend(yearly_results_table, 'Equity Dividend Rate (%)', yearly_stats)
-        _get_column_data(yearly_results_table, 'Other Income', yearly_stats,
-                         [self.twenty_nineteen_net, self.twenty_eighteen_net, self.twenty_seventeen_net,
-                          self.twenty_sixteen_net, self.twenty_fifteen_net])
-        _get_column_data(yearly_results_table, 'Basic EPS', yearly_stats,
-                         [self.twenty_nineteen_eps, self.twenty_eighteen_eps, self.twenty_seventeen_eps,
-                          self.twenty_sixteen_eps, self.twenty_fifteen_eps])
-        _get_column_data(yearly_results_table, 'Equity Share Capital', yearly_stats,
-                         [self.twenty_nineteen_esc, self.twenty_eighteen_esc, self.twenty_seventeen_esc,
-                          self.twenty_sixteen_esc, self.twenty_fifteen_esc])
-        _get_column_data(yearly_results_table, 'Net Profit/(Loss) For the Period', yearly_stats,
-                         [self.twenty_nineteen_profit, self.twenty_eighteen_profit, self.twenty_seventeen_profit,
-                          self.twenty_sixteen_profit, self.twenty_fifteen_profit])
+        if response.xpath('//*[@id="new-format"]/div[2]/text()').get() != 'Data Not Available for Yearly Results':
+            yearly_results_table = response.xpath('//*[@id="standalone-new"]/div[1]/table/tr')
+            _get_avg_dividend(yearly_results_table, 'Equity Dividend Rate (%)', yearly_stats)
+            _get_column_data(yearly_results_table, ['Total Income From Operations'], yearly_stats,
+                             [self.twenty_nineteen_net, self.twenty_eighteen_net, self.twenty_seventeen_net,
+                              self.twenty_sixteen_net, self.twenty_fifteen_net])
+            _get_column_data(yearly_results_table, ['Basic EPS'], yearly_stats,
+                             [self.twenty_nineteen_eps, self.twenty_eighteen_eps, self.twenty_seventeen_eps,
+                              self.twenty_sixteen_eps, self.twenty_fifteen_eps])
+            _get_column_data(yearly_results_table, ['Equity Share Capital'], yearly_stats,
+                             [self.twenty_nineteen_esc, self.twenty_eighteen_esc, self.twenty_seventeen_esc,
+                              self.twenty_sixteen_esc, self.twenty_fifteen_esc])
+            _get_column_data(yearly_results_table, ['Net Profit/(Loss) For the Period'], yearly_stats,
+                             [self.twenty_nineteen_profit, self.twenty_eighteen_profit, self.twenty_seventeen_profit,
+                              self.twenty_sixteen_profit, self.twenty_fifteen_profit])
 
-        yearly_stats_dataframe = pa.DataFrame(yearly_stats, index=[stock_id])
-        dataframe = dataframe.merge(yearly_stats_dataframe, left_index=True, right_index=True)
-        _write_data_to_csv(dataframe)
+            yearly_stats_dataframe = pa.DataFrame(yearly_stats, index=[stock_id])
+            dataframe = dataframe.merge(yearly_stats_dataframe, left_index=True, right_index=True)
+
+        _write_data_to_csv(dataframe, spider)
 
 
-def _write_data_to_csv(dataframe):
+def _write_data_to_csv(dataframe, spider):
     dataframe.reset_index()
-    relative_path = os.path.realpath(os.path.dirname(__file__))
-    stock_analysis_file_path = os.path.join(relative_path, '../StockMarketData.csv')
-    print(stock_analysis_file_path)
-    dataframe.to_csv(stock_analysis_file_path, encoding='utf-8', index=False, mode='a', header=False)
+    dataframe.to_csv(spider.stock_analysis_file_path, encoding='utf-8', index=False, mode='a', header=False)
 
 
 def _get_column_data(rows, column_identifier, data_as_dict, column_names):
     data = []
     for row in rows:
-        if row.xpath('.//td/text()')[0].get() == column_identifier:
+        if row.xpath('.//td/text()')[0].get() in column_identifier:
             data = row.xpath('.//td/text()')[1:6].getall()
 
-    data = [float(item.replace(',', '')) for item in data]
+    data = [float(item.replace(',', '')) if is_float(item) else 0.0 for item in data]
 
     for index in range(len(data)):
         key = column_names[index]
@@ -147,6 +153,13 @@ def _get_avg_dividend(rows, column_identifier, data_as_dict):
         if row.xpath('.//td/text()')[0].get() == column_identifier:
             data = row.xpath('.//td/text()')[1:6].getall()
 
-    for item in data:
-        five_years_dividend = 0 if item == '--' else float(item.replace(',', ''))
-        data_as_dict['avg_dividend'] = statistics.mean(five_years_dividend)
+    five_years_dividend = [float(item.replace(',', '')) if is_float(item) else 0.0 for item in data]
+    data_as_dict['avg_dividend'] = statistics.mean(five_years_dividend)
+
+
+def is_float(s):
+    try:
+        float(s)
+        return True
+    except ValueError:
+        return False
