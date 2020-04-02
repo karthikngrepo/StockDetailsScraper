@@ -1,6 +1,6 @@
 # Stock Scraper
 
-Stock scraper is a project to scrape the indian stock market information to get a  single papge view of basic stats around all the listed socks in BSE
+Stock scraper is a project to scrape the indian stock market information to get a single page view of basic stats around all the listed socks in BSE or if need be in NSE
 
 ## Installation
 
