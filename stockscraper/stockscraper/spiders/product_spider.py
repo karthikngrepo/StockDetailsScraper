@@ -159,6 +159,7 @@ def _get_avg_dividend(rows, column_identifier, data_as_dict):
 
 def is_float(s):
     try:
+        s = s.replace(',', '')
         float(s)
         return True
     except ValueError:
